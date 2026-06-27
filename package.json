@@ -1,0 +1,13 @@
+{
+  "name": "expense-tracker-sync-server",
+  "version": "1.0.0",
+  "description": "WebSocket relay server for Expense Tracker real-time sync notifications",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
+  }
+}
