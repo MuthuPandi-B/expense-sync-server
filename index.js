@@ -109,6 +109,30 @@ wss.on('connection', (ws) => {
       }
       return;
     }
+
+    if (msg.type === 'expense_changed') {
+      const { deviceUUID, email, expense } = msg;
+      if (!deviceUUID || !email || !expense) return;
+
+      console.log(`[expense_changed] from ${deviceUUID} (${email}) — expense ${expense.id}`);
+
+      // Relay expense data to all same-email WebSocket connections except sender
+      for (const [uuid, conn] of connections) {
+        if (uuid !== deviceUUID && conn.email === email && conn.ws.readyState === 1) {
+          conn.ws.send(JSON.stringify({
+            type: 'expense_changed',
+            deviceUUID,
+            expense,
+          }));
+        }
+      }
+
+      // Send FCM data message to offline devices
+      if (fcmEnabled) {
+        sendFcmExpenseChanged(email, deviceUUID, expense);
+      }
+      return;
+    }
   });
 
   ws.on('close', () => {
@@ -155,6 +179,47 @@ async function sendFcmToOtherDevices(email, senderUUID, timestamp) {
       console.error(`[fcm-send] failed for ${entry.deviceUUID}:`, err.code || err.message);
 
       // Remove invalid/expired tokens
+      if (
+        err.code === 'messaging/invalid-registration-token' ||
+        err.code === 'messaging/registration-token-not-registered'
+      ) {
+        tokenSet.delete(entry);
+        console.log(`[fcm-cleanup] removed stale token for ${entry.deviceUUID}`);
+      }
+    }
+  }
+}
+
+/**
+ * Send FCM data-only message with expense data to offline devices.
+ * Falls back to sync_completed if expense payload exceeds FCM limits.
+ */
+async function sendFcmExpenseChanged(email, senderUUID, expense) {
+  const tokenSet = fcmTokens.get(email);
+  if (!tokenSet || tokenSet.size === 0) return;
+
+  const messaging = admin.messaging();
+  const expenseJson = JSON.stringify(expense);
+
+  // FCM data values must be strings; total payload limit is 4KB
+  const useFullPayload = Buffer.byteLength(expenseJson, 'utf8') < 3500;
+
+  for (const entry of tokenSet) {
+    if (entry.deviceUUID === senderUUID) continue;
+
+    try {
+      const data = useFullPayload
+        ? { type: 'expense_changed', deviceUUID: senderUUID, expense: expenseJson }
+        : { type: 'sync_completed', deviceUUID: senderUUID, timestamp: new Date().toISOString() };
+
+      await messaging.send({
+        token: entry.fcmToken,
+        data,
+        android: { priority: 'high' },
+      });
+      console.log(`[fcm-send] expense_changed to ${entry.deviceUUID}`);
+    } catch (err) {
+      console.error(`[fcm-send] failed for ${entry.deviceUUID}:`, err.code || err.message);
       if (
         err.code === 'messaging/invalid-registration-token' ||
         err.code === 'messaging/registration-token-not-registered'
