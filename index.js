@@ -5,6 +5,13 @@ const admin = require('firebase-admin');
 
 const PORT = process.env.PORT || 8080;
 
+// ── Version configuration ──────────────────────────────────────
+const pkg = require('./package.json');
+const SERVER_VERSION = pkg.version;
+const LATEST_APP_VERSION = process.env.LATEST_APP_VERSION || SERVER_VERSION;
+const APK_DOWNLOAD_URL = process.env.APK_DOWNLOAD_URL || '';
+const FORCE_UPDATE = process.env.FORCE_UPDATE === 'true';
+
 // ── Firebase Admin SDK initialization ──────────────────────────
 let fcmEnabled = false;
 try {
@@ -32,6 +39,15 @@ const connections = new Map();
 // In-memory FCM token map: email -> Set of { deviceUUID, fcmToken }
 // Persists across WebSocket disconnects (tokens remain valid when app is closed)
 const fcmTokens = new Map();
+
+app.get('/api/version', (_req, res) => {
+  res.json({
+    latestAppVersion: LATEST_APP_VERSION,
+    serverVersion: SERVER_VERSION,
+    downloadUrl: APK_DOWNLOAD_URL,
+    forceUpdate: FORCE_UPDATE,
+  });
+});
 
 app.get('/health', (_req, res) => {
   let fcmTokenCount = 0;
