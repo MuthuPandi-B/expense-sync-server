@@ -127,10 +127,11 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'expense_changed') {
-      const { deviceUUID, email, expense } = msg;
+      const { deviceUUID, email, expense, action } = msg;
       if (!deviceUUID || !email || !expense) return;
 
-      console.log(`[expense_changed] from ${deviceUUID} (${email}) — expense ${expense.id}`);
+      const act = action || 'added';
+      console.log(`[expense_changed] from ${deviceUUID} (${email}) — ${act} expense ${expense.id}`);
 
       // Relay expense data to all same-email WebSocket connections except sender
       for (const [uuid, conn] of connections) {
@@ -139,14 +140,52 @@ wss.on('connection', (ws) => {
             type: 'expense_changed',
             deviceUUID,
             expense,
+            action: act,
           }));
         }
       }
 
       // Send FCM data message to offline devices
       if (fcmEnabled) {
-        sendFcmExpenseChanged(email, deviceUUID, expense);
+        sendFcmExpenseChanged(email, deviceUUID, expense, act);
       }
+      return;
+    }
+
+    if (msg.type === 'register_fcm_tokens') {
+      const { email, tokens } = msg;
+      if (!email || !tokens || typeof tokens !== 'object') return;
+
+      if (!fcmTokens.has(email)) {
+        fcmTokens.set(email, new Set());
+      }
+      const tokenSet = fcmTokens.get(email);
+
+      let added = 0;
+      for (const [deviceUUID, fcmToken] of Object.entries(tokens)) {
+        if (!deviceUUID || !fcmToken) continue;
+
+        // Check if this device already has the same token
+        let exists = false;
+        for (const entry of tokenSet) {
+          if (entry.deviceUUID === deviceUUID) {
+            if (entry.fcmToken === fcmToken) {
+              exists = true;
+            } else {
+              // Same device, different token — replace
+              tokenSet.delete(entry);
+            }
+            break;
+          }
+        }
+
+        if (!exists) {
+          tokenSet.add({ deviceUUID, fcmToken });
+          added++;
+        }
+      }
+
+      console.log(`[register_fcm_tokens] ${email}: received ${Object.keys(tokens).length} token(s), added/updated ${added} — total: ${tokenSet.size}`);
       return;
     }
   });
@@ -210,12 +249,13 @@ async function sendFcmToOtherDevices(email, senderUUID, timestamp) {
  * Send FCM data-only message with expense data to offline devices.
  * Falls back to sync_completed if expense payload exceeds FCM limits.
  */
-async function sendFcmExpenseChanged(email, senderUUID, expense) {
+async function sendFcmExpenseChanged(email, senderUUID, expense, action) {
   const tokenSet = fcmTokens.get(email);
   if (!tokenSet || tokenSet.size === 0) return;
 
   const messaging = admin.messaging();
   const expenseJson = JSON.stringify(expense);
+  const act = action || 'added';
 
   // FCM data values must be strings; total payload limit is 4KB
   const useFullPayload = Buffer.byteLength(expenseJson, 'utf8') < 3500;
@@ -225,7 +265,7 @@ async function sendFcmExpenseChanged(email, senderUUID, expense) {
 
     try {
       const data = useFullPayload
-        ? { type: 'expense_changed', deviceUUID: senderUUID, expense: expenseJson }
+        ? { type: 'expense_changed', deviceUUID: senderUUID, expense: expenseJson, action: act }
         : { type: 'sync_completed', deviceUUID: senderUUID, timestamp: new Date().toISOString() };
 
       await messaging.send({
